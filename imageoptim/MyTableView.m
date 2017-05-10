@@ -1,6 +1,7 @@
 #import "MyTableView.h"
 #import "FilesController.h"
 #import "RevealButtonCell.h"
+#import "Job.h"
 #import "File.h"
 #import "log.h"
 
@@ -31,8 +32,8 @@
     NSArray *selected = [f selectedObjects];
     NSMutableArray *filePaths = [NSMutableArray arrayWithCapacity:[selected count]];
     NSMutableArray *fileNames = [NSMutableArray arrayWithCapacity:[selected count]];
-    for(File *file in selected) {
-        NSString *path = file.filePath.path;
+    for(Job *job in selected) {
+        NSString *path = job.filePath.path;
         [filePaths addObject:path];
         [fileNames addObject:[path.lastPathComponent stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
     };
@@ -45,16 +46,17 @@
     }
 }
 
--(NSArray*)filesForDataURI {
+-(NSArray<File *> *)filesForDataURI {
     FilesController *f = (FilesController*)[self delegate];
 
     NSArray *selectedFiles = [f selectedObjects];
     NSMutableArray *files = [NSMutableArray arrayWithCapacity:[selectedFiles count]];
     NSUInteger totalSize = 0;
-    for(File *file in selectedFiles) {
-        if (![file isDone] || !file.byteSizeOptimized) continue;
-        if (file.byteSizeOptimized > 100000) continue;
-        totalSize += file.byteSizeOptimized;
+    for(Job *job in selectedFiles) {
+        if (![job isDone]) continue;
+        File *file = job.savedOutput ? job.savedOutput : job.unoptimizedInput;
+        if (!file || file.byteSize > 100000) continue;
+        totalSize += file.byteSize;
         if (totalSize > 1000000) break;
         [files addObject:file];
     }
@@ -64,13 +66,13 @@
 - (IBAction)copyAsDataURI:(id)sender {
     NSMutableArray *urls = [NSMutableArray new];
     for(File *file in [self filesForDataURI]) {
-        NSData *data = [NSData dataWithContentsOfURL:file.filePath];
+        NSData *data = [NSData dataWithContentsOfURL:file.path];
 
         NSString *type = [file mimeType];
         if (!type) continue;
 
         NSString *url = [[NSString stringWithFormat:@"data:%@;base64,", type]
-                         stringByAppendingString:[data base64Encoding]];
+                         stringByAppendingString:[data base64EncodedStringWithOptions:0]];
 
         [urls addObject:url];
     }
@@ -151,7 +153,7 @@
     // Find the visible cells that have a non-empty tracking rect and add rects for each of them
     NSRange visibleRows = [self rowsInRect:[self visibleRect]];
     NSIndexSet *visibleColIndexes = [self columnIndexesInRect:[self visibleRect]];
-    
+
     CGRect rect = [self.window convertRectFromScreen:(CGRect){
                        .origin = [NSEvent mouseLocation],
                    }];

@@ -1,8 +1,9 @@
 #import "ImageOptimController.h"
 #import "FilesController.h"
 #import "RevealButtonCell.h"
+#import "Job.h"
 #import "File.h"
-#import "Workers/Worker.h"
+#import "Backend/Workers/Worker.h"
 #import "PrefsController.h"
 #import "MyTableView.h"
 #import "SharedPrefs.h"
@@ -28,7 +29,7 @@ static const char *kIMPreviewPanelContext = "preview";
     NSUInteger maxTasks = [[NSProcessInfo processInfo] activeProcessorCount];
 
     defs[@"RunConcurrentFiles"] = @(maxTasks);
-    defs[@"RunConcurrentDirscans"] = @((int)ceil((double)maxTasks/3.9));
+    defs[@"RunConcurrentDirscans"] = @((int)ceil((double)maxTasks / 3.9));
 
     // Use lighter defaults on slower machines
     if (maxTasks <= 4) {
@@ -40,21 +41,21 @@ static const char *kIMPreviewPanelContext = "preview";
 
     NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
     [userDefaults registerDefaults:defs];
-    
+
     [self initStatusbarWithDefaults:userDefaults];
 
     IOSharedPrefsCopy(userDefaults);
 
     [filesController configureWithTableView:tableView];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(observeNotification:) name:kFilesQueueFinished object:filesController];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(observeNotification:) name:kJobQueueFinished object:filesController];
 
     NSArray *monospaceFontColumns = @[
-                                      fileColumn,
-                                      sizeColumn,
-                                      originalSizeColumn,
-                                      savingsColumn,
-                                      bestToolColumn,
-                                      ];
+        fileColumn,
+        sizeColumn,
+        originalSizeColumn,
+        savingsColumn,
+        bestToolColumn,
+    ];
     for (NSTableColumn *column in monospaceFontColumns) {
         NSFont *font = [NSFont systemFontOfSize:13];
         if ([NSFont respondsToSelector:@selector(monospacedDigitSystemFontOfSize:weight:)]) {
@@ -67,32 +68,16 @@ static const char *kIMPreviewPanelContext = "preview";
     NSUpdateDynamicServices();
 }
 
--(void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:kFilesQueueFinished object:filesController];
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:kJobQueueFinished object:filesController];
 }
 
 - (void)handleServices:(NSPasteboard *)pboard
-    userData:(NSString *)userData
-    error:(NSString **)error {
-
+              userData:(NSString *)userData
+                 error:(NSString **)error {
     NSArray *paths = [pboard propertyListForType:NSFilenamesPboardType];
     [filesController performSelectorInBackground:@selector(addPaths:) withObject:paths];
 }
-
-static NSString *formatSize(long long byteSize, NSNumberFormatter *formatter) {
-    NSString *unit;
-    double size;
-
-    if (byteSize > 1000*1000LL) {
-        size = (double)byteSize / (1000.0*1000.0);
-        unit = NSLocalizedString(@"MB", "megabytes suffix");
-    } else {
-        size = (double)byteSize / 1000.0;
-        unit = NSLocalizedString(@"KB", "kilobytes suffix");
-    }
-
-    return [[formatter stringFromNumber:@(size)] stringByAppendingString:unit];
-};
 
 static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name, NSString *key, NSMutableArray *arr) {
     NSInteger q = [defs integerForKey:key];
@@ -101,120 +86,144 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     }
 }
 
--(void)initStatusbarWithDefaults:(NSUserDefaults *)defs {
+- (void)initStatusbarWithDefaults:(NSUserDefaults *)defs {
     [[statusBarLabel cell] setBackgroundStyle:NSBackgroundStyleRaised];
 
     static BOOL overallAvg = NO;
-    static NSString *defaultText; defaultText = statusBarLabel.stringValue;
-    static NSNumberFormatter* formatter; formatter = [NSNumberFormatter new];
-    static NSNumberFormatter* percFormatter; percFormatter = [NSNumberFormatter new];
+    static NSString *defaultText;
+    defaultText = statusBarLabel.stringValue;
+    NSByteCountFormatter *sizeFormatter = [[NSByteCountFormatter alloc] init];
+
+    static NSNumberFormatter *percFormatter;
+    percFormatter = [NSNumberFormatter new];
 
     if (quitWhenDone) {
         defaultText = NSLocalizedString(@"ImageOptim will quit when optimizations are complete", @"status bar");
     }
 
-    [formatter setMaximumFractionDigits:1];
     [percFormatter setMaximumFractionDigits:1];
-    [formatter setNumberStyle: NSNumberFormatterDecimalStyle];
-    [percFormatter setNumberStyle: NSNumberFormatterPercentStyle];
+    [percFormatter setNumberStyle:NSNumberFormatterPercentStyle];
 
     statusBarUpdateQueue = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, 0, 0,
-                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
-    dispatch_source_set_event_handler(statusBarUpdateQueue, ^ {
-        NSString *str = defaultText;
-        BOOL selectable = NO;
-        @synchronized(filesController) {
-            long long bytesTotal=0, optimizedTotal=0;
-            double optimizedFractionTotal=0, maxOptimizedFraction=0;
-            int fileCount=0;
+                                                  dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
+    dispatch_source_set_event_handler(statusBarUpdateQueue, ^{
+      NSString *str = defaultText;
+      BOOL selectable = NO;
+      @synchronized(filesController) {
+          long long bytesTotal = 0, optimizedTotal = 0;
+          double optimizedFractionTotal = 0, maxOptimizedFraction = 0;
+          NSUInteger optimizedFileCount = 0;
+          BOOL anyBusyFiles = false;
 
-            NSArray *content = [filesController content];
-            for (File *f in content) {
-                const NSUInteger bytes = f.byteSizeOriginal, optimized = f.byteSizeOptimized;
-                if (bytes && (bytes != optimized || [f isDone])) {
-                    const double optimizedFraction = 1.0 - (double)optimized/(double)bytes;
-                    if (optimizedFraction > maxOptimizedFraction) {
-                        maxOptimizedFraction = optimizedFraction;
-                    }
-                    optimizedFractionTotal += optimizedFraction;
-                    bytesTotal += bytes;
-                    optimizedTotal += optimized;
-                    fileCount++;
-                }
-            }
+          NSArray *content = [filesController content];
+          for (Job *f in content) {
+              const File *optimizedFile = f.wipInput;
+              if (!optimizedFile) {
+                  optimizedFile = f.savedOutput;
+              }
+              if (!optimizedFile) {
+                  continue;
+              }
 
-            if (fileCount > 1 && bytesTotal) {
-                const double savedTotal = 1.0 - (double)optimizedTotal/(double)bytesTotal;
-                const double savedAvg = optimizedFractionTotal/(double)fileCount;
-                if (savedTotal > 0.001) {
-                    if (savedTotal*0.8 > savedAvg) {
-                        overallAvg = YES;
-                    } else if (savedAvg*0.8 > savedTotal) {
-                        overallAvg = NO;
-                    }
+              if (!anyBusyFiles && [f isBusy]) {
+                  anyBusyFiles = YES;
+              }
 
-                    NSString *fmtStr;
-                    double avgNum;
-                    if (overallAvg) {
-                        fmtStr = NSLocalizedString(@"Saved %@ out of %@. %@ overall (up to %@ per file)","total ratio, status bar");
-                        avgNum = savedTotal;
-                    } else {
-                        fmtStr = NSLocalizedString(@"Saved %@ out of %@. %@ per file on average (up to %@)","per file avg, status bar");
-                        avgNum = savedAvg;
-                    }
+              const NSUInteger bytes = f.initialInput.byteSize, optimized = optimizedFile.byteSize;
+              if (bytes && optimized && (bytes != optimized || [f isDone])) {
+                  const double optimizedFraction = 1.0 - (double)optimized / (double)bytes;
+                  if (optimizedFraction > maxOptimizedFraction) {
+                      maxOptimizedFraction = optimizedFraction;
+                  }
+                  optimizedFractionTotal += optimizedFraction;
+                  bytesTotal += bytes;
+                  optimizedTotal += optimized;
+                  optimizedFileCount++;
+              }
+          }
 
-                    const long long bytesSaved = bytesTotal - optimizedTotal;
+          if (optimizedFileCount > 1 && bytesTotal) {
+              const double savedTotal = 1.0 - (double)optimizedTotal / (double)bytesTotal;
+              const double savedAvg = optimizedFractionTotal / (double)optimizedFileCount;
+              if (savedTotal > 0.001) {
+                  if (savedTotal * 0.8 > savedAvg) {
+                      overallAvg = YES;
+                  } else if (savedAvg * 0.8 > savedTotal) {
+                      overallAvg = NO;
+                  }
 
-                    str = [NSString stringWithFormat:fmtStr,
-                           formatSize(bytesSaved, formatter),
-                           formatSize(bytesTotal, formatter),
-                           [percFormatter stringFromNumber: @(avgNum)],
-                           [percFormatter stringFromNumber: @(maxOptimizedFraction)]];
-                    selectable = YES;
-                }
-            } else {
-                if ([defs boolForKey:@"LossyEnabled"]) {
-                    NSMutableArray *arr = [NSMutableArray new];
-                    appendFormatNameIfLossyEnabled(defs, @"JPEG", @"JpegOptimMaxQuality", arr);
-                    appendFormatNameIfLossyEnabled(defs, @"PNG", @"PngMinQuality", arr);
-                    appendFormatNameIfLossyEnabled(defs, @"GIF", @"GifQuality", arr);
-                    if ([arr count]) {
-                        str = [NSString stringWithFormat:@"%@ (%@)",
-                                                      NSLocalizedString(@"Lossy minification enabled", @"status bar"),
-                                                      [arr componentsJoinedByString:@", "]];
-                    }
-                }
-            }
+                  NSString *fmtStr;
+                  double avgNum;
+                  if (overallAvg) {
+                      fmtStr = NSLocalizedString(@"Saved %@ out of %@. %@ overall (up to %@ per file)", "total ratio, status bar");
+                      avgNum = savedTotal;
+                  } else {
+                      fmtStr = NSLocalizedString(@"Saved %@ out of %@. %@ per file on average (up to %@)", "per file avg, status bar");
+                      avgNum = savedAvg;
+                  }
 
-            // that was also in KVO, but caused deadlocks there. Here it's deferred.
-            [filesController updateStoppableState];
-        }
+                  const long long bytesSaved = bytesTotal - optimizedTotal;
 
-        dispatch_async(dispatch_get_main_queue(), ^() {
-            [statusBarLabel setStringValue:str];
-            [statusBarLabel setSelectable:selectable];
-        });
-        usleep(100000); // 1/10th of a sec to avoid updating statusbar as fast as possible (100% cpu on the statusbar alone is ridiculous)
+                  str = [NSString stringWithFormat:fmtStr,
+                                                   [sizeFormatter stringFromByteCount:bytesSaved],
+                                                   [sizeFormatter stringFromByteCount:bytesTotal],
+                                                   [percFormatter stringFromNumber:@(avgNum)],
+                                                   [percFormatter stringFromNumber:@(maxOptimizedFraction)]];
+                  selectable = YES;
+              }
+          } else if ([defs boolForKey:@"GuetzliEnabled"]) {
+              str = @"Warning: Guetzli tool enabled. Optimizations may take a very long time.";
+          } else if ([defs boolForKey:@"LossyEnabled"]) {
+              NSMutableArray *arr = [NSMutableArray new];
+              appendFormatNameIfLossyEnabled(defs, @"JPEG", @"JpegOptimMaxQuality", arr);
+              appendFormatNameIfLossyEnabled(defs, @"PNG", @"PngMinQuality", arr);
+              appendFormatNameIfLossyEnabled(defs, @"GIF", @"GifQuality", arr);
+              if ([arr count]) {
+                  str = [NSString stringWithFormat:@"%@ (%@)",
+                                                   NSLocalizedString(@"Lossy minification enabled", @"status bar"),
+                                                   [arr componentsJoinedByString:@", "]];
+              }
+          } else if (anyBusyFiles) {
+              str = @"";
+          }
+
+          // that was also in KVO, but caused deadlocks there. Here it's deferred.
+          [filesController updateStoppableState];
+      }
+
+      dispatch_async(dispatch_get_main_queue(), ^() {
+        [statusBarLabel setStringValue:str];
+        [statusBarLabel setSelectable:selectable];
+      });
+      usleep(100000); // 1/10th of a sec to avoid updating statusbar as fast as possible (100% cpu on the statusbar alone is ridiculous)
     });
     dispatch_resume(statusBarUpdateQueue);
 
+    [filesController addObserver:self forKeyPath:@"isBusy" options:0 context:nil];
     [filesController addObserver:self forKeyPath:@"arrangedObjects.@count" options:0 context:nil];
     [filesController addObserver:self forKeyPath:@"arrangedObjects.@sum.byteSizeOptimized" options:0 context:nil];
-    [filesController addObserver:self forKeyPath:@"selectionIndexes" options:0 context:(void*)kIMPreviewPanelContext];
+    [filesController addObserver:self forKeyPath:@"selectionIndexes" options:0 context:(void *)kIMPreviewPanelContext];
 
-    dispatch_source_merge_data(statusBarUpdateQueue, 1); // Initial display
+    [self updateStatusBar]; // Initial display
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification object:defs queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note){
-        dispatch_source_merge_data(statusBarUpdateQueue, 1);
-    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
+                                                      object:defs
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+                                                    [self updateStatusBar];
+                                                  }];
 }
 
--(void)awakeFromNib {
+- (void)updateStatusBar {
+    dispatch_source_merge_data(statusBarUpdateQueue, 1);
+}
+
+- (void)awakeFromNib {
     if (quitWhenDone) {
         [NSApp hide:self];
     }
 
-    RevealButtonCell *cell=[[tableView tableColumnWithIdentifier:@"filename"]dataCell];
+    RevealButtonCell *cell = [[tableView tableColumnWithIdentifier:@"filename"] dataCell];
     [cell setInfoButtonAction:@selector(openInFinder:)];
     [cell setTarget:tableView];
 
@@ -224,9 +233,7 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     [self performSelectorInBackground:@selector(loadCreditsHTML:) withObject:nil];
 }
 
-
--(void)loadCreditsHTML:(id)_unused {
-
+- (void)loadCreditsHTML:(id)_unused {
     static const char header[] = "<!DOCTYPE html>\
     <meta charset=utf-8>\
     <style>\
@@ -234,19 +241,20 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     </style>\
     <title>Credits</title>";
 
-    NSMutableData *html = [NSMutableData dataWithBytesNoCopy:(void*)header length:sizeof(header) freeWhenDone:NO];
+    NSMutableData *html = [NSMutableData dataWithBytesNoCopy:(void *)header length:sizeof(header) freeWhenDone:NO];
     [html appendData:[NSData dataWithContentsOfFile:[[NSBundle mainBundle] pathForResource:@"Credits" ofType:@"html"]]];
-
-    [credits setEditable:YES];
     NSAttributedString *tmpStr = [[NSAttributedString alloc]
-                                  initWithHTML:html
-                                  documentAttributes:nil];
-    [credits insertText:tmpStr];
-    [credits setEditable:NO];
+              initWithHTML:html
+        documentAttributes:nil];
+
+    dispatch_async(dispatch_get_main_queue(), ^() {
+      [credits setEditable:YES];
+      [credits insertText:tmpStr];
+      [credits setEditable:NO];
+    });
 }
 
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
-{
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
     // Defer and coalesce statusbar updates
     dispatch_source_merge_data(statusBarUpdateQueue, 1);
 
@@ -255,7 +263,7 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     }
 }
 
--(void)observeNotification:(NSNotification *)notif {
+- (void)observeNotification:(NSNotification *)notif {
     if (!filesController.isBusy) {
         if (quitWhenDone) {
             [NSApp terminate:self];
@@ -265,23 +273,21 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     }
 }
 
-
 // invoked by Dock
 - (void)application:(NSApplication *)sender openFiles:(NSArray *)paths {
     [filesController setRow:-1];
-    [sender replyToOpenOrPrint:[filesController addPaths:paths] ? NSApplicationDelegateReplySuccess :NSApplicationDelegateReplyFailure];
+    [sender replyToOpenOrPrint:[filesController addPaths:paths] ? NSApplicationDelegateReplySuccess : NSApplicationDelegateReplyFailure];
 }
 
-
--(IBAction)quickLookAction:(id)sender {
+- (IBAction)quickLookAction:(id)sender {
     [tableView performSelector:@selector(quickLook)];
 }
 
--(IBAction)revert:(id)sender {
+- (IBAction)revert:(id)sender {
     [filesController revert];
 }
 
--(IBAction)stop:(id)sender {
+- (IBAction)stop:(id)sender {
     [filesController stopSelected];
 }
 
@@ -295,11 +301,9 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     [filesController startAgainOptimized:YES];
 }
 
-
 - (IBAction)clearComplete:(id)sender {
     [filesController clearComplete];
 }
-
 
 - (IBAction)showPrefs:(id)sender {
     if (!prefsController) {
@@ -308,24 +312,34 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     [prefsController showWindow:self];
 }
 
--(IBAction)openHomepage:(id)sender {
-    [self openURL:@"http://imageoptim.com"];
+- (IBAction)showLossyPrefs:(id)sender {
+    if (!prefsController) {
+        prefsController = [PrefsController new];
+    }
+    [prefsController showLossySettings:sender];
 }
 
--(IBAction)viewSource:(id)sender {
-    [self openURL:@"http://imageoptim.com/source"];
+- (IBAction)openApiHomepage:(id)sender {
+    [self openURL:@"https://imageoptim.com/app-api"];
 }
 
--(IBAction)openDonationPage:(id)sender {
-    [self openURL:@"http://imageoptim.com/donate.html"];
+- (IBAction)openHomepage:(id)sender {
+    [self openURL:@"https://imageoptim.com"];
 }
 
--(void)openURL:(NSString *)stringURL {
+- (IBAction)viewSource:(id)sender {
+    [self openURL:@"https://imageoptim.com/source"];
+}
+
+- (IBAction)openDonationPage:(id)sender {
+    [self openURL:@"https://imageoptim.com/donate.html"];
+}
+
+- (void)openURL:(NSString *)stringURL {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:stringURL]];
 }
 
-
--(IBAction)browseForFiles:(id)sender {
+- (IBAction)browseForFiles:(id)sender {
     NSOpenPanel *oPanel = [NSOpenPanel openPanel];
 
     [oPanel setAllowsMultipleSelection:YES];
@@ -333,25 +347,26 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     [oPanel setResolvesAliases:YES];
     [oPanel setAllowedFileTypes:[filesController fileTypes]];
 
-    [oPanel beginSheetModalForWindow:[tableView window] completionHandler:^(NSInteger returnCode) {
-        if (returnCode == NSModalResponseOK) {
-            NSWindow *myWindow=[tableView window];
-            [myWindow setStyleMask:[myWindow styleMask]| NSResizableWindowMask ];
-            [filesController setRow:-1];
-            [filesController addURLs:oPanel.URLs];
-        }
-    }];
+    [oPanel beginSheetModalForWindow:[tableView window]
+                   completionHandler:^(NSInteger returnCode) {
+                     if (returnCode == NSModalResponseOK) {
+                         NSWindow *myWindow = [tableView window];
+                         [myWindow setStyleMask:[myWindow styleMask] | NSResizableWindowMask];
+                         [filesController setRow:-1];
+                         [filesController addURLs:oPanel.URLs];
+                     }
+                   }];
 }
 
--(BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)theApplication {
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)theApplication {
     return YES;
 }
 
--(void)applicationWillTerminate:(NSNotification *)n {
+- (void)applicationWillTerminate:(NSNotification *)n {
     [filesController cleanup];
 }
 
--(NSString *)version {
+- (NSString *)version {
     return [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"];
 }
 
@@ -381,7 +396,7 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
     return [[filesController selectedObjects] count];
 }
 
-- (id <QLPreviewItem>)previewPanel:(QLPreviewPanel *)panel previewItemAtIndex:(NSInteger)index {
+- (id<QLPreviewItem>)previewPanel:(QLPreviewPanel *)panel previewItemAtIndex:(NSInteger)index {
     return [filesController selectedObjects][index];
 }
 
@@ -413,7 +428,7 @@ static void appendFormatNameIfLossyEnabled(NSUserDefaults *defs, NSString *name,
 }
 
 // This delegate method provides the rect on screen from which the panel will zoom.
-- (NSRect)previewPanel:(QLPreviewPanel *)panel sourceFrameOnScreenForPreviewItem:(id <QLPreviewItem>)item {
+- (NSRect)previewPanel:(QLPreviewPanel *)panel sourceFrameOnScreenForPreviewItem:(id<QLPreviewItem>)item {
     NSInteger index = [[filesController arrangedObjects] indexOfObject:item];
     if (index == NSNotFound) {
         return NSZeroRect;

@@ -2,22 +2,25 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
 <channel>
 <title>ImageOptim</title>
-<link>https://imageoptim.com/appcast-test.xml</link>
+<link>https://imageoptim.com/appcast.xml</link>
 <description>ImageOptim updates</description>
 <language>en</language>
 <item>
-<title>Version 1.6.2a2</title>
+<title>1.7.0</title>
+<pubDate>Fri, 03 Mar 2017 12:55:48 +0000</pubDate>
 <description><![CDATA[
 <ul>
-    <li>Much faster version of Zopfli</li>
-    <li>Updated pngcrush, pngquant2, MozJPEG</li>
-    <li>Runs tools with lower priority (OS&nbsp;X&nbsp;10.10+ only)</li>
-    <li>Updated Chinese localization (by pluwen)</li>
+    <li>Added lossless and lossy SVG optimization. Only available if you have <a href="https://nodejs.org/">Node.js</a> installed.</li>
+    <li>Big under-the-hood changes improving handling of the list of files, temporary files, and reverting to original</li>
 </ul>
 ]]></description>
-<pubDate>Sun, 26 Jul 2015 14:37:57 +0000</pubDate>
-<enclosure url="https://imageoptim.com/ImageOptim1.6.1a1.tar.bz2" sparkle:version="1.6.1a1" length="1416711" type="application/bzip2" sparkle:dsaSignature="MCwCFHALRNGOFeh3785GRdm1gZq9ywjhAhQZFDtlhIwEUUf78EcVbliTJGueNQ=="/>
-<sparkle:minimumSystemVersion>10.11.0</sparkle:minimumSystemVersion>
+<sparkle:minimumSystemVersion>10.8.0</sparkle:minimumSystemVersion>
+<enclosure url="https://imageoptim.com/ImageOptim1.7.0.1.tar.bz2" sparkle:version="1.7.0.1" sparkle:shortVersionString="1.7.0" length="1461613" type="application/octet-stream" sparkle:dsaSignature="MCwCFGgah0loSAwUoEn3Z2NjZS/cA6u3AhRFnyqnkz0owjL0d1zhFyItbq+q8w=="/>
+<sparkle:deltas>
+<enclosure url="https://imageoptim.com/ImageOptim1.7.0.1-1.7.0.delta" sparkle:version="1.7.0.1" sparkle:shortVersionString="1.7.0" sparkle:deltaFrom="1.7.0" length="39211" type="application/octet-stream" sparkle:dsaSignature="MC0CFC/GT65ezc2rUS/NPxbX/2boRDVdAhUAjq7E6NJA9T2DYjwBBg3D+879pag="/>
+<enclosure url="https://imageoptim.com/ImageOptim1.7.0.1-1.6.5.delta" sparkle:version="1.7.0.1" sparkle:shortVersionString="1.7.0" sparkle:deltaFrom="1.6.5" length="1034390" type="application/octet-stream" sparkle:dsaSignature="MC0CFByhk4Ig7QXhsl8Cd9zrmNH4qmWsAhUAl+GKGOkkxrZxY+N7QjUSuIPkph4="/>
+<enclosure url="https://imageoptim.com/ImageOptim1.7.0.1-1.6.4.delta" sparkle:version="1.7.0.1" sparkle:shortVersionString="1.7.0" sparkle:deltaFrom="1.6.4" length="1220955" type="application/octet-stream" sparkle:dsaSignature="MCwCFFNb3j6I23XmIxh9TPpP01EQgs4jAhQn5cnCtI3sokx+U2zzpw/HyAxsIg=="/>
+<enclosure url="https://imageoptim.com/ImageOptim1.7.0.1-1.6.3.delta" sparkle:version="1.7.0.1" sparkle:shortVersionString="1.7.0" sparkle:deltaFrom="1.6.3" length="1247221" type="application/octet-stream" sparkle:dsaSignature="MC0CFQCZF6KMs/xapd2f4wGDpIQ5f5rybAIUZrV9E1jvTHS9n3W7euntOtRBgtI="/></sparkle:deltas>
 </item>
 </channel>
 </rss>

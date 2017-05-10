@@ -8,7 +8,12 @@
 @class ImageOptimController;
 
 @interface PrefsController : NSWindowController {
+    BOOL notified;
 }
+@property IBOutlet NSTabView *tabs;
+@property (readonly) BOOL svgSupported;
 
--(IBAction)showHelp:(id)sender;
+- (IBAction)showHelp:(id)sender;
+- (IBAction)showLossySettings:(id)sender;
 @end
+
